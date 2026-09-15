@@ -54,7 +54,15 @@ function pushLog(
 
 
 function looksLikeSafetyDump(s: string): boolean {
-  return /user\s*safety\s*:\s*safe/i.test(s) || /content[- ]?safety/i.test(s) || /^\s*safe\s*$/i.test(s.trim());
+  return (
+    /user\s*safety\s*:\s*safe/i.test(s) ||
+    /content[- ]?safety/i.test(s) ||
+    /^\s*safe\s*$/i.test(s.trim()) ||
+    /\bi cannot\b/i.test(s) ||
+    /\bas an ai\b/i.test(s) ||
+    /\bi'm unable to\b/i.test(s) ||
+    /\bi am unable to\b/i.test(s)
+  );
 }
 
 function looksLikeBadFinal(s: string): boolean {

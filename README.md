@@ -50,6 +50,16 @@ npm install
 npm run eval -- --fixture
 ```
 
+**Published free-model scores (ops):** do not use the `openrouter/free` router alias — it can land content-safety SKUs that return non-task answers. Pin a concrete free id instead:
+
+- Primary: `nex-agi/nex-n2.5-pro:free`
+- Backup: `nvidia/nemotron-3.5-lightning:free`
+
+```bash
+export MODEL=nex-agi/nex-n2.5-pro:free
+npm run eval
+```
+
 **Live multi-model path**:
 
 ```bash
