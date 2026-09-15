@@ -1,0 +1,28 @@
+{
+  "name": "basilisk-eval",
+  "version": "0.1.0",
+  "description": "Public Basilisk eval harness (ReAct + MCP + multi-model LLM); frozen suite + deterministic pass/N.",
+  "type": "module",
+  "main": "dist/run.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node --import tsx src/run.ts",
+    "eval": "node --import tsx src/run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "eval",
+    "react-agent",
+    "mcp",
+    "openrouter"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
