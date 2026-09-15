@@ -36,8 +36,9 @@ Action Input: <JSON object for the tool, or final answer string when Action is f
 After each Action you will receive:
 Observation: <tool result>
 
-When done, use Action: finish with Action Input set to the final answer.
+When done, use Action: finish with Action Input set to the final answer (plain text only).
 Do not wrap the Final Answer / Action Input in quotes unless the answer itself must contain those quote characters.
+Never emit XML/HTML tool markup, <tool_call>, or code fences for tools — only the Thought/Action/Action Input lines above.
 Keep reasoning short. Prefer tools over guessing.`;
 
 function pushLog(
@@ -49,6 +50,42 @@ function pushLog(
   const entry: ReactLogEntry = { ts: new Date().toISOString(), type, data };
   log.push(entry);
   onLog?.(entry);
+}
+
+
+function looksLikeToolMarkup(s: string): boolean {
+  return /<\/?tool_call\b|<function\b|<invoke\b|```(?:xml|json)?/i.test(s);
+}
+
+/** Best-effort parse of common free-model tool markup into ReAct action. */
+function parseToolMarkup(text: string): { action?: string; actionInput?: string } | null {
+  const name =
+    text.match(/<tool_call>\s*([a-zA-Z0-9_]+)/i)?.[1] ||
+    text.match(/name["']?\s*[:=]\s*["']([a-zA-Z0-9_]+)["']/i)?.[1] ||
+    text.match(/call\s+([a-zA-Z0-9_]+)\s*\(/i)?.[1];
+  if (!name) return null;
+
+  const jsonBlock = text.match(/\{[\s\S]*\}/)?.[0];
+  if (jsonBlock) {
+    try {
+      JSON.parse(jsonBlock);
+      return { action: name, actionInput: jsonBlock };
+    } catch {
+      /* fall through */
+    }
+  }
+
+  const args: Record<string, string> = {};
+  for (const m of text.matchAll(
+    /(?:parameter|arg|param)?\s*["']?([a-zA-Z_][\w]*)["']?\s*[:=]\s*["']([^"']*)["']/gi,
+  )) {
+    if (m[1].toLowerCase() === "name") continue;
+    args[m[1]] = m[2];
+  }
+  if (Object.keys(args).length > 0) {
+    return { action: name, actionInput: JSON.stringify(args) };
+  }
+  return { action: name, actionInput: "{}" };
 }
 
 function parseReactBlock(text: string): {
@@ -131,27 +168,68 @@ export class ReactAgent {
       });
 
       transcript += `\n--- step ${step} ---\n${resp.content}\n`;
-      const parsed = parseReactBlock(resp.content);
+      let parsed = parseReactBlock(resp.content);
 
       if (parsed.thought) {
         pushLog(log, this.onLog, "thought", { step, thought: parsed.thought });
       }
 
       if (parsed.finalAnswer && (!parsed.action || parsed.action.toLowerCase() === "finish")) {
+        if (looksLikeToolMarkup(parsed.finalAnswer)) {
+          messages.push({ role: "assistant", content: resp.content });
+          messages.push({
+            role: "user",
+            content:
+              "Final Answer must be plain text only. Use Action: finish with Action Input set to the plain result.",
+          });
+          continue;
+        }
         finalAnswer = parsed.finalAnswer;
         pushLog(log, this.onLog, "final", { step, finalAnswer });
         return { finalAnswer, steps: step, log, rawTranscript: transcript };
       }
 
       if (!parsed.action) {
-        // Treat whole reply as final if no action parsed.
-        finalAnswer = resp.content.trim();
-        pushLog(log, this.onLog, "final", { step, finalAnswer, note: "no_action_parsed" });
-        return { finalAnswer, steps: step, log, rawTranscript: transcript };
+        const fromMarkup = parseToolMarkup(resp.content);
+        if (fromMarkup?.action) {
+          parsed.action = fromMarkup.action;
+          parsed.actionInput = fromMarkup.actionInput;
+        } else if (looksLikeToolMarkup(resp.content) || !resp.content.trim()) {
+          // Free models often dump tool XML — do not accept as Final Answer.
+          messages.push({ role: "assistant", content: resp.content });
+          messages.push({
+            role: "user",
+            content:
+              "Invalid format. Reply using only:\nThought: ...\nAction: <tool_or_finish>\nAction Input: <json_or_plain_final>\nNo XML tool markup.",
+          });
+          continue;
+        } else {
+          finalAnswer = resp.content.trim();
+          if (looksLikeToolMarkup(finalAnswer)) {
+            messages.push({ role: "assistant", content: resp.content });
+            messages.push({
+              role: "user",
+              content:
+                "That was not a final answer. Use Action: finish with Action Input set to the plain result only.",
+            });
+            continue;
+          }
+          pushLog(log, this.onLog, "final", { step, finalAnswer, note: "no_action_parsed" });
+          return { finalAnswer, steps: step, log, rawTranscript: transcript };
+        }
       }
 
       if (parsed.action.toLowerCase() === "finish") {
         finalAnswer = parsed.actionInput ?? parsed.finalAnswer ?? "";
+        if (looksLikeToolMarkup(finalAnswer)) {
+          messages.push({ role: "assistant", content: resp.content });
+          messages.push({
+            role: "user",
+            content:
+              "Action Input must be the plain final answer only (no tool markup). Try Action: finish again.",
+          });
+          continue;
+        }
         pushLog(log, this.onLog, "final", { step, finalAnswer });
         return { finalAnswer, steps: step, log, rawTranscript: transcript };
       }
