@@ -53,8 +53,20 @@ function pushLog(
 }
 
 
+function looksLikeSafetyDump(s: string): boolean {
+  return /user\s*safety\s*:\s*safe/i.test(s) || /content[- ]?safety/i.test(s) || /^\s*safe\s*$/i.test(s.trim());
+}
+
+function looksLikeBadFinal(s: string): boolean {
+  return !s.trim() || looksLikeToolMarkup(s) || looksLikeSafetyDump(s);
+}
+
 function looksLikeToolMarkup(s: string): boolean {
-  return /<\/?tool_call\b|<function\b|<invoke\b|```(?:xml|json)?/i.test(s);
+  return (
+    /<\/?tool_call\b|<function\b|<invoke\b|```(?:xml|json)?/i.test(s) ||
+    /\bAction\s*:/i.test(s) ||
+    /\bAction\s*Input\s*:/i.test(s)
+  );
 }
 
 /** Best-effort parse of common free-model tool markup into ReAct action. */
@@ -155,8 +167,18 @@ export class ReactAgent {
 
     let transcript = `User: ${taskPrompt}\n`;
     let finalAnswer = "";
+    let lastGoodObservation = "";
 
     for (let step = 1; step <= this.maxSteps; step++) {
+      const resolveFinish = (candidate: string): string => {
+        const c = (candidate ?? "").trim();
+        if (c && !looksLikeBadFinal(c)) return c;
+        if (lastGoodObservation && !looksLikeBadFinal(lastGoodObservation)) {
+          return lastGoodObservation;
+        }
+        return c;
+      };
+
       pushLog(log, this.onLog, "llm_request", { step, messages: structuredClone(messages) });
 
       const resp = await this.llm.complete({ messages, temperature: 0 });
@@ -175,16 +197,16 @@ export class ReactAgent {
       }
 
       if (parsed.finalAnswer && (!parsed.action || parsed.action.toLowerCase() === "finish")) {
-        if (looksLikeToolMarkup(parsed.finalAnswer)) {
+        finalAnswer = resolveFinish(parsed.finalAnswer);
+        if (looksLikeBadFinal(finalAnswer)) {
           messages.push({ role: "assistant", content: resp.content });
           messages.push({
             role: "user",
             content:
-              "Final Answer must be plain text only. Use Action: finish with Action Input set to the plain result.",
+              "Final Answer must be the plain task result only (not safety text or tool markup). Use Action: finish with that Action Input.",
           });
           continue;
         }
-        finalAnswer = parsed.finalAnswer;
         pushLog(log, this.onLog, "final", { step, finalAnswer });
         return { finalAnswer, steps: step, log, rawTranscript: transcript };
       }
@@ -204,13 +226,13 @@ export class ReactAgent {
           });
           continue;
         } else {
-          finalAnswer = resp.content.trim();
-          if (looksLikeToolMarkup(finalAnswer)) {
+          finalAnswer = resolveFinish(resp.content);
+          if (looksLikeBadFinal(finalAnswer)) {
             messages.push({ role: "assistant", content: resp.content });
             messages.push({
               role: "user",
               content:
-                "That was not a final answer. Use Action: finish with Action Input set to the plain result only.",
+                "That was not a final answer. Use Action: finish with Action Input set to the plain task result only.",
             });
             continue;
           }
@@ -220,13 +242,13 @@ export class ReactAgent {
       }
 
       if (parsed.action.toLowerCase() === "finish") {
-        finalAnswer = parsed.actionInput ?? parsed.finalAnswer ?? "";
-        if (looksLikeToolMarkup(finalAnswer)) {
+        finalAnswer = resolveFinish(parsed.actionInput ?? parsed.finalAnswer ?? "");
+        if (looksLikeBadFinal(finalAnswer)) {
           messages.push({ role: "assistant", content: resp.content });
           messages.push({
             role: "user",
             content:
-              "Action Input must be the plain final answer only (no tool markup). Try Action: finish again.",
+              "Action Input must be the plain task result only (not safety text or tool markup). Try Action: finish again.",
           });
           continue;
         }
@@ -255,6 +277,9 @@ export class ReactAgent {
         data: result.data,
       });
 
+      if (result.ok && observation && !looksLikeBadFinal(observation)) {
+        lastGoodObservation = observation.trim();
+      }
       transcript += `Observation: ${observation}\n`;
       messages.push({ role: "assistant", content: resp.content });
       messages.push({ role: "user", content: `Observation: ${observation}` });
