@@ -78,6 +78,7 @@ async function runOneTask(
       onLog: (e) => {
         agentLog.push(e);
       },
+      expectedTools: task.expectedTools,
     });
     const result = await agent.run(task.prompt);
     finalAnswer = result.finalAnswer;

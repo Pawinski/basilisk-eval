@@ -1,6 +1,7 @@
 export {
   createLlmClient,
   OpenRouterClient,
+  parseCachedTokens,
   type ChatMessage,
   type LlmClient,
   type LlmCompletionRequest,
