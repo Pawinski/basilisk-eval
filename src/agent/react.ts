@@ -25,6 +25,8 @@ export type ReactAgentOptions = {
   maxSteps?: number;
   systemPrompt?: string;
   onLog?: (entry: ReactLogEntry) => void;
+  /** If present, only these tools (registry order, unknown ignored). Empty [] = no tools. */
+  expectedTools?: string[];
 };
 
 const DEFAULT_SYSTEM = `You are a ReAct agent. Use this format strictly:
@@ -143,12 +145,59 @@ function parseActionArgs(raw: string | undefined): Record<string, unknown> {
   }
 }
 
+/**
+ * Compact messages to system + task + last K rounds.
+ * A round = one assistant + one following user message.
+ * If transcript ends on assistant without following user, include that assistant.
+ */
+export function compactMessages(
+  messages: ChatMessage[],
+  maxRounds: number,
+): ChatMessage[] {
+  if (messages.length <= 2) return messages;
+
+  const system = messages[0];
+  const taskUser = messages[1];
+  const rest = messages.slice(2);
+
+  if (rest.length === 0) {
+    return [system, taskUser];
+  }
+
+  const rounds: ChatMessage[][] = [];
+  let currentRound: ChatMessage[] = [];
+
+  for (const msg of rest) {
+    if (msg.role === "assistant") {
+      if (currentRound.length > 0) {
+        rounds.push(currentRound);
+      }
+      currentRound = [msg];
+    } else if (msg.role === "user") {
+      currentRound.push(msg);
+    }
+  }
+
+  if (currentRound.length > 0) {
+    rounds.push(currentRound);
+  }
+
+  const keptRounds = rounds.slice(-maxRounds);
+  const compacted: ChatMessage[] = [system, taskUser];
+  for (const round of keptRounds) {
+    compacted.push(...round);
+  }
+
+  return compacted;
+}
+
 export class ReactAgent {
   private readonly llm: LlmClient;
   private readonly tools: McpToolClient;
   private readonly maxSteps: number;
   private readonly systemPrompt: string;
   private readonly onLog?: (entry: ReactLogEntry) => void;
+  private readonly expectedTools?: string[];
 
   constructor(opts: ReactAgentOptions) {
     this.llm = opts.llm;
@@ -156,20 +205,35 @@ export class ReactAgent {
     this.maxSteps = opts.maxSteps ?? 8;
     this.systemPrompt = opts.systemPrompt ?? DEFAULT_SYSTEM;
     this.onLog = opts.onLog;
+    this.expectedTools = opts.expectedTools;
   }
 
   async run(taskPrompt: string): Promise<ReactRunResult> {
     const log: ReactLogEntry[] = [];
-    const toolList = await this.tools.listTools();
-    const toolCatalog = toolList
-      .map((t) => `- ${t.name}: ${t.description}`)
-      .join("\n");
+    let toolList = await this.tools.listTools();
+
+    if (this.expectedTools !== undefined) {
+      const allowedSet = new Set(this.expectedTools);
+      const filteredList = toolList.filter((t) => allowedSet.has(t.name));
+      const orderedList: typeof toolList = [];
+      for (const name of this.expectedTools) {
+        const found = filteredList.find((t) => t.name === name);
+        if (found) orderedList.push(found);
+      }
+      toolList = orderedList;
+    }
+
+    const toolCatalog =
+      toolList.length > 0
+        ? toolList.map((t) => `- ${t.name}: ${t.description}`).join("\n")
+        : "";
+
+    const systemContent = toolCatalog
+      ? `${this.systemPrompt}\n\nAvailable tools:\n${toolCatalog}`
+      : this.systemPrompt;
 
     const messages: ChatMessage[] = [
-      {
-        role: "system",
-        content: `${this.systemPrompt}\n\nAvailable tools:\n${toolCatalog || "(none)"}`,
-      },
+      { role: "system", content: systemContent },
       { role: "user", content: taskPrompt },
     ];
 
@@ -187,9 +251,10 @@ export class ReactAgent {
         return c;
       };
 
-      pushLog(log, this.onLog, "llm_request", { step, messages: structuredClone(messages) });
+      const compactedMessages = compactMessages(messages, 2);
+      pushLog(log, this.onLog, "llm_request", { step, messages: structuredClone(compactedMessages) });
 
-      const resp = await this.llm.complete({ messages, temperature: 0 });
+      const resp = await this.llm.complete({ messages: compactedMessages, temperature: 0 });
       pushLog(log, this.onLog, "llm_response", {
         step,
         model: resp.model,
