@@ -99,6 +99,8 @@ See `.env.example`:
 - `OPENROUTER_API_KEY` — required for live LLM score
 - `MODEL` — pluggable model id (OpenRouter format)
 - `OPENROUTER_BASE_URL` — optional API base override
+- `MAX_TOKENS` — max tokens per completion (default 512)
+- `BASILISK_CACHE_BREAKPOINT` — enable cache breakpoint (default off)
 
 ## License
 
